@@ -76,6 +76,9 @@ function positiveRoomId(value: unknown): string {
 
 function httpReason(status: number): UnknownReason {
   if (status === 403) return 'ACCESS_DENIED'
+  // B站对机房 IP（含 Cloudflare）返回 412（-412 request was banned），
+  // 属于平台限制访问，与 403 同类；否则会被误报为「平台服务异常」。
+  if (status === 412) return 'ACCESS_DENIED'
   if (status === 429) return 'RATE_LIMITED'
   return 'PLATFORM_ERROR'
 }

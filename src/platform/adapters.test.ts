@@ -53,6 +53,14 @@ describe('bilibili adapter', () => {
     expect(await bilibiliAdapter.inspect('23058', { transport: denied }))
       .toMatchObject({ kind: 'unknown', reason: 'ACCESS_DENIED' })
 
+    // B站风控对机房 IP 返回 412，应归为平台限制访问而非平台服务异常。
+    const banned = makeBilibiliTransport({
+      status: 412,
+      body: '{"code":-412,"message":"request was banned"}',
+    })
+    expect(await bilibiliAdapter.inspect('23058', { transport: banned }))
+      .toMatchObject({ kind: 'unknown', reason: 'ACCESS_DENIED' })
+
     const limited = makeBilibiliTransport({ status: 429, body: '' })
     expect(await bilibiliAdapter.inspect('23058', { transport: limited }))
       .toMatchObject({ kind: 'unknown', reason: 'RATE_LIMITED' })
