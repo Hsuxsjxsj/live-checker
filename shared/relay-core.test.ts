@@ -161,6 +161,23 @@ describe('relayRequest 平台请求', () => {
     expect(captured[2]?.headers.cookie).toBe('buvid3=CACHED')
   })
 
+  it('B 站指纹请求失败也会被缓存，不重复白跑', async () => {
+    const relayRequest = await freshRelay()
+    let fingerprintCalls = 0
+    stubFetch((request) => {
+      if (request.url.includes(FINGERPRINT_PATH)) {
+        fingerprintCalls += 1
+        return fakeResponse({ status: 412, body: '{"code":-412}' })
+      }
+      return fakeResponse({ status: 412, body: '{"code":-412}' })
+    })
+
+    await relayRequest('https://api.live.bilibili.com/room/v1/Room/get_info?room_id=4')
+    await relayRequest('https://api.live.bilibili.com/room/v1/Room/get_info?room_id=5')
+
+    expect(fingerprintCalls).toBe(1)
+  })
+
   it('抖音直播间请求会先取 ttwid 并携带 Cookie', async () => {
     const relayRequest = await freshRelay()
     const captured = stubFetch((request) => {

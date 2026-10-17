@@ -60,6 +60,7 @@ const MAX_BODY_CHARS = 4_000_000
 const TTWID_CACHE_MS = 6 * 60 * 60 * 1000
 const TTWID_PATTERN = /(?:^|[,;\s])ttwid=([A-Za-z0-9._%|~-]{1,512})(?:;|$)/
 const BILIBILI_COOKIE_CACHE_MS = 6 * 60 * 60 * 1000
+const BILIBILI_COOKIE_FAILURE_CACHE_MS = 10 * 60 * 1000
 
 /**
  * 短链接（b23.tv）会跳到平台「网页」地址而非 API 域名，例如
@@ -73,7 +74,7 @@ const SHORT_LINK_DESTINATION_HOSTS: ReadonlySet<string> = new Set([
 ])
 
 let ttwidCache: { value: string; expiresAt: number } | null = null
-let bilibiliCookieCache: { value: string; expiresAt: number } | null = null
+let bilibiliCookieCache: { value: string | null; expiresAt: number } | null = null
 
 function failure(error: RelayError): RelayFailure {
   return { ok: false, error }
@@ -147,17 +148,31 @@ async function obtainTtwid(): Promise<string | null> {
 }
 
 /**
- * 获取 B 站设备指纹 Cookie。
+ * 获取 B 站设备指纹 Cookie（buvid3/buvid4）。
  *
- * B 站对机房 IP（Cloudflare 边缘即属此类）的匿名 API 请求会返回
- * `{"code":-412,"message":"request was banned"}`；携带从公开指纹接口取得的
- * buvid3/buvid4 后，请求会被判定为正常浏览器流量。取不到时返回 null，
- * 此时仍照常发起请求（由上游决定结果），不影响其它平台。
+ * 从 Cloudflare 边缘发出的 B 站请求会稳定返回
+ * `{"code":-412,"message":"request was banned"}`：这是对机房 IP 段的整体风控，
+ * 补 Cookie 与完整浏览器请求头也无法绕过（实测 2026-10，连指纹接口本身都返回 412）。
+ * 该逻辑保留的原因：在非机房 IP 上自建中转时能提高通过率，且 B站 若放宽风控可自动恢复。
+ *
+ * 取不到时返回 null，此时仍照常发起请求（由上游决定结果），不影响其它平台。
+ * 失败结果同样缓存，避免每次检测都白跑一趟注定失败的请求。
  */
 async function obtainBilibiliCookie(): Promise<string | null> {
   if (bilibiliCookieCache !== null && Date.now() < bilibiliCookieCache.expiresAt) {
     return bilibiliCookieCache.value
   }
+  const cookie = await fetchBilibiliCookie()
+  bilibiliCookieCache = {
+    value: cookie,
+    expiresAt:
+      Date.now() + (cookie === null ? BILIBILI_COOKIE_FAILURE_CACHE_MS : BILIBILI_COOKIE_CACHE_MS),
+  }
+  return cookie
+}
+
+/** 请求 B 站公开指纹接口；任何失败都返回 null，不向上抛错。 */
+async function fetchBilibiliCookie(): Promise<string | null> {
   let response: Response
   try {
     response = await fetch(BILIBILI_FINGERPRINT_URL, {
@@ -188,10 +203,7 @@ async function obtainBilibiliCookie(): Promise<string | null> {
   if (b3 !== '') parts.push(`buvid3=${b3}`)
   if (b4 !== '') parts.push(`buvid4=${b4}`)
   if (parts.length === 0) return null
-
-  const cookie = parts.join('; ')
-  bilibiliCookieCache = { value: cookie, expiresAt: Date.now() + BILIBILI_COOKIE_CACHE_MS }
-  return cookie
+  return parts.join('; ')
 }
 
 async function relayShortLink(target: URL): Promise<RelayOutcome> {

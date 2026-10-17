@@ -29,6 +29,32 @@
    在设置中填写代理模板（如 `https://api.allorigins.win/raw?url=`）即可检测 B站/斗鱼/虎牙；
    **抖音与 B站短链接（b23.tv）必须使用内置中转**，公共代理无法支持。
 
+### ⚠️ 已知限制：B站 在 Cloudflare 上不可用
+
+实测（2026-10）**B站 对 Cloudflare 边缘 IP 段做了整体风控**：从 CF Function 发出的任何 B站 请求
+都稳定返回 `{"code":-412,"message":"request was banned"}`，换接口、换请求头、补 Cookie 均无效。
+
+| 尝试过的方式 | 结果 |
+| --- | --- |
+| `room/v1/Room/get_info`（本机住宅 IP） | ✅ 200 |
+| 同一接口，从 Cloudflare 边缘请求 | ❌ 412 |
+| 换 `xlive/web-room/v1/index/getInfoByRoom`、`live_user/…/get_anchor_in_room` | ❌ 412 |
+| 公开设备指纹接口 `api.bilibili.com/x/frontend/finger/spi` | ❌ 412 |
+| 补 `buvid3/buvid4` Cookie + 完整浏览器 UA/Referer | ❌ 412（IP 已被封，Cookie 无效） |
+| 浏览器直连（跨域必带 `Origin`） | ❌ 403 |
+| 公共 CORS 代理（allorigins / codetabs / corsproxy.io / cors.lol） | ❌ 522 / 522 / 401 / 429 |
+
+因此各平台的实测可用情况为：
+
+| 部署方式 | 哔哩哔哩 | 斗鱼 | 虎牙 | 抖音 | b23.tv |
+| --- | --- | --- | --- | --- | --- |
+| **Cloudflare Pages（内置中转）** | ❌ 被风控 | ✅ 实测通过 | ✅ 实测通过 | ✅ 实测通过 | ✅ |
+| 非机房 IP 自建中转（本机 / VPS） | ✅ | ✅ | ✅ | ✅ | ✅ |
+| GitHub Pages + 公共代理 | ⚠️ 取决于代理 | ⚠️ | ⚠️ | ❌ | ❌ |
+
+B站 检测失败时状态显示为 `unknown`（需确认），**不会伪造为 `offline`**。
+如果你有非机房 IP 的服务器，可在 ⚙️ 检测通道设置中填入自建代理，即可恢复 B站 检测。
+
 ## 本地开发
 
 ```powershell
