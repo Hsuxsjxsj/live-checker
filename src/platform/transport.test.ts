@@ -161,6 +161,41 @@ describe('transport', () => {
         error instanceof PlatformRequestError && error.reason === 'MALFORMED_RESPONSE')
   })
 
+  it('中转返回非 JSON 错误页时映射为通道不可用', async () => {
+    // Cloudflare 免费版配额耗尽返回的 1027 错误页是 HTML，不是我们的 JSON 信封。
+    const fetchMock = vi.fn(((input: RequestInfo) => {
+      const url = String(input)
+      if (url.includes('probe=1')) return Promise.resolve(jsonResponseMock({ ok: true, probe: true }))
+      return Promise.resolve(new Response('<!doctype html><title>Error 1027</title>', {
+        status: 429,
+        headers: { 'content-type': 'text/html' },
+      }))
+    })) as FetchMock
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { pickTransport, PlatformRequestError } = await loadTransportModule()
+    const transport = await pickTransport()
+    await expect(transport.fetchPlatform('https://www.douyu.com/betard/3168536'))
+      .rejects.toSatisfy((error: unknown) =>
+        error instanceof PlatformRequestError && error.reason === 'TRANSPORT_UNAVAILABLE')
+  })
+
+  it('中转信封结构异常时映射为通道不可用', async () => {
+    const fetchMock = vi.fn(((input: RequestInfo) => {
+      const url = String(input)
+      if (url.includes('probe=1')) return Promise.resolve(jsonResponseMock({ ok: true, probe: true }))
+      // 合法 JSON 但缺少 status 字段，说明中转实现异常，同样属于通道级失败。
+      return Promise.resolve(jsonResponseMock({ ok: true }))
+    })) as FetchMock
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { pickTransport, PlatformRequestError } = await loadTransportModule()
+    const transport = await pickTransport()
+    await expect(transport.fetchPlatform('https://www.douyu.com/betard/3168536'))
+      .rejects.toSatisfy((error: unknown) =>
+        error instanceof PlatformRequestError && error.reason === 'TRANSPORT_UNAVAILABLE')
+  })
+
   it('保存配置后立即生效', async () => {
     const fetchMock = vi.fn(() =>
       Promise.resolve(new Response('404', { status: 404 }))) as FetchMock

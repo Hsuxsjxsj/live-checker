@@ -108,6 +108,12 @@ pnpm deploy      # = pnpm build && pnpm dlx wrangler pages deploy dist
 前端资源使用相对路径、中转是**同源** `/api/relay`，因此绑定自定义域名**不需要改动任何代码**。
 注意 `www.example.com` 与 `example.com` 是两个不同的域名，需要分别添加。
 
+### 免费配额与超额表现
+
+Cloudflare 免费版每天 **100,000 次** Function 调用（静态资源免费不限量），**次日 UTC 0 点 = 北京时间 08:00 自动重置**。
+实测：**每个直播间每轮检测 1 次请求**，页面加载时额外 1 次探测；页面切到后台即停止轮询，不消耗配额。
+配额耗尽时页面照常打开，检测行显示「状态未知 · 检测通道不可用」（不会伪装成平台故障），次日 08:00 自动恢复，无需重启或改配置。
+
 ## 关于 GitHub Pages（可选，功能受限）
 
 仓库附带的是 CI 工作流 [.github/workflows/ci.yml](.github/workflows/ci.yml)：推送时执行类型检查、单元测试与构建，

@@ -125,11 +125,16 @@ interface RelayEnvelope {
   error?: string
 }
 
+/**
+ * 解析中转信封。若返回的不是 JSON（例如 Cloudflare 免费配额耗尽时的 1027 错误页、
+ * 404/502 的 HTML 页面），说明中转自身没能正常工作，属于通道级失败，
+ * 必须报「检测通道不可用」，不能让用户以为平台故障。
+ */
 async function readRelayEnvelope(response: Response): Promise<RelayEnvelope> {
   try {
     return JSON.parse(await response.text()) as RelayEnvelope
   } catch {
-    throw new PlatformRequestError('PLATFORM_ERROR')
+    throw new PlatformRequestError('TRANSPORT_UNAVAILABLE')
   }
 }
 
@@ -143,7 +148,7 @@ const relayTransport: Transport = {
       throw new PlatformRequestError(
         payload.ok === false && payload.error !== undefined
           ? mapRelayError(payload.error)
-          : 'PLATFORM_ERROR',
+          : 'TRANSPORT_UNAVAILABLE',
       )
     }
     return { status: payload.status, body: payload.body ?? '' }
@@ -153,7 +158,11 @@ const relayTransport: Transport = {
     const response = await fetchWithGuards(relayUrl(url), options ?? {})
     const payload = await readRelayEnvelope(response)
     if (!response.ok || !payload.ok || typeof payload.location !== 'string') {
-      throw new PlatformRequestError('PLATFORM_ERROR')
+      throw new PlatformRequestError(
+        payload.ok === false && payload.error !== undefined
+          ? mapRelayError(payload.error)
+          : 'TRANSPORT_UNAVAILABLE',
+      )
     }
     return payload.location
   },
