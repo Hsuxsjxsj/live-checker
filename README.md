@@ -49,6 +49,8 @@ pnpm build      # 类型检查 + 生产构建到 dist/
    - **Root directory**: 留空（仓库根目录即应用根目录）
    - **Build command**: `pnpm build`
    - **Build output directory**: `dist`
+   - **环境变量**：无需设置。Pages v3 构建镜像默认 Node.js 22.16 + pnpm 10.11，
+     已满足本项目要求（Vite 8 需要 Node ≥ 22.12，lockfile 为 pnpm 9.0 格式）
 4. 部署完成后，`functions/api/relay.ts` 会自动作为 `/api/relay` 边缘函数生效，
    页面探测到中转可用后即可检测全部四个平台。
 
@@ -64,24 +66,24 @@ pnpm deploy      # = pnpm build && pnpm dlx wrangler pages deploy dist
 > 抖音检测依赖平台对数据中心 IP 的容忍度；若抖音返回 `unknown`，属于平台侧限制，
 > B站/斗鱼/虎牙不受影响。
 
-## 部署到 GitHub Pages（需要配置公共代理）
+## 关于 GitHub Pages（可选，功能受限）
 
-仓库已附带工作流 [.github/workflows/deploy.yml](.github/workflows/deploy.yml)：
+仓库附带的是 CI 工作流 [.github/workflows/ci.yml](.github/workflows/ci.yml)：推送时执行类型检查、单元测试与构建，
+不包含 Pages 部署步骤（部署走 Cloudflare Pages）。如果仍想发布到 GitHub Pages，需要自行启用
+Pages（Settings → Pages → Source 选择 **GitHub Actions**）并补一个部署工作流。
 
-1. 推送仓库到 GitHub（分支 `main`）。
-2. 仓库 Settings → Pages → Build and deployment → Source 选择 **GitHub Actions**。
-3. 推送后工作流自动执行类型检查、单元测试、构建并发布到 Pages。
-4. 打开页面，进入 ⚙️ 检测通道设置，填写公共 CORS 代理模板，例如：
-   - `https://api.allorigins.win/raw?url=`
-   - `https://api.codetabs.com/v1/proxy?quest=`
+限制：GitHub Pages 无法运行 `/api/relay`，因此**抖音检测与 B站短链接识别不可用**。若要用它，
+需在页面 ⚙️ 检测通道设置里填写公共 CORS 代理模板才能检测 B站/斗鱼/虎牙，例如：
 
-限制：GitHub Pages 无法运行 `/api/relay`，因此**抖音检测与 B站短链接识别不可用**；
+- `https://api.allorigins.win/raw?url=`
+- `https://api.codetabs.com/v1/proxy?quest=`
+
 公共代理由第三方提供，速度与稳定性不可保证。需要完整功能请使用 Cloudflare Pages。
 
 ## 目录结构
 
 ```text
-├── .github/workflows/deploy.yml  GitHub Pages 自动部署（类型检查 + 测试 + 构建 + 发布）
+├── .github/workflows/ci.yml      CI：类型检查 + 单元测试 + 构建
 ├── functions/api/relay.ts        Cloudflare Pages Function（域名白名单中转，部署到 CF 自动生效）
 ├── shared/relay-core.ts          中转核心逻辑（CF Function 与本地开发服务器共用）
 ├── src/
