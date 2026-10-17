@@ -36,6 +36,7 @@ export type RelayOutcome = RelaySuccess | RelayFailure
 /** 允许转发的上游域名（只读公开数据，全部为直播平台官方域名）。 */
 export const RELAY_ALLOWED_HOSTS: ReadonlySet<string> = new Set([
   'api.live.bilibili.com',
+  'api.bilibili.com',
   'mp.huya.com',
   'www.huya.com',
   'm.douyu.com',
@@ -47,13 +48,32 @@ export const RELAY_ALLOWED_HOSTS: ReadonlySet<string> = new Set([
 const SHORT_LINK_HOST = 'b23.tv'
 const DOUYIN_SESSION_URL = 'https://live.douyin.com/'
 const DOUYIN_ROOM_PATH_PREFIX = '/webcast/'
+const BILIBILI_LIVE_HOST = 'api.live.bilibili.com'
+/** B 站公开的设备指纹接口，用于获取 buvid3/buvid4，规避机房 IP 的 -412 风控。 */
+const BILIBILI_FINGERPRINT_URL = 'https://api.bilibili.com/x/frontend/finger/spi'
 const USER_AGENT = 'Mozilla/5.0'
+/** B 站风控会拦截明显非浏览器的请求，因此使用完整 UA。 */
+const BROWSER_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
 const UPSTREAM_TIMEOUT_MS = 10_000
 const MAX_BODY_CHARS = 4_000_000
 const TTWID_CACHE_MS = 6 * 60 * 60 * 1000
 const TTWID_PATTERN = /(?:^|[,;\s])ttwid=([A-Za-z0-9._%|~-]{1,512})(?:;|$)/
+const BILIBILI_COOKIE_CACHE_MS = 6 * 60 * 60 * 1000
+
+/**
+ * 短链接（b23.tv）会跳到平台「网页」地址而非 API 域名，例如
+ * `https://live.bilibili.com/23058`，因此需要单独一份允许作为解析结果的域名表。
+ */
+const SHORT_LINK_DESTINATION_HOSTS: ReadonlySet<string> = new Set([
+  'bilibili.com',
+  'www.bilibili.com',
+  'm.bilibili.com',
+  'live.bilibili.com',
+])
 
 let ttwidCache: { value: string; expiresAt: number } | null = null
+let bilibiliCookieCache: { value: string; expiresAt: number } | null = null
 
 function failure(error: RelayError): RelayFailure {
   return { ok: false, error }
@@ -76,6 +96,20 @@ function parseAllowedTarget(rawUrl: string): URL | null {
   if (parsed.username !== '' || parsed.password !== '') return null
   if (parsed.port !== '') return null
   if (!RELAY_ALLOWED_HOSTS.has(parsed.hostname.toLowerCase())) return null
+  return parsed
+}
+
+/** 校验短链接解析出的最终地址：只接受平台的网页域名。 */
+function parseShortLinkDestination(rawUrl: string): URL | null {
+  let parsed: URL
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'https:') return null
+  if (parsed.username !== '' || parsed.password !== '') return null
+  if (!SHORT_LINK_DESTINATION_HOSTS.has(parsed.hostname.toLowerCase())) return null
   return parsed
 }
 
@@ -112,6 +146,54 @@ async function obtainTtwid(): Promise<string | null> {
   return ttwid
 }
 
+/**
+ * 获取 B 站设备指纹 Cookie。
+ *
+ * B 站对机房 IP（Cloudflare 边缘即属此类）的匿名 API 请求会返回
+ * `{"code":-412,"message":"request was banned"}`；携带从公开指纹接口取得的
+ * buvid3/buvid4 后，请求会被判定为正常浏览器流量。取不到时返回 null，
+ * 此时仍照常发起请求（由上游决定结果），不影响其它平台。
+ */
+async function obtainBilibiliCookie(): Promise<string | null> {
+  if (bilibiliCookieCache !== null && Date.now() < bilibiliCookieCache.expiresAt) {
+    return bilibiliCookieCache.value
+  }
+  let response: Response
+  try {
+    response = await fetch(BILIBILI_FINGERPRINT_URL, {
+      method: 'GET',
+      headers: {
+        'user-agent': BROWSER_USER_AGENT,
+        accept: 'application/json, text/plain, */*',
+        referer: 'https://www.bilibili.com/',
+      },
+      redirect: 'follow',
+      signal: upstreamTimeoutSignal(),
+    })
+  } catch {
+    return null
+  }
+  if (response.status !== 200) return null
+
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    return null
+  }
+  const data = (payload as { data?: { b_3?: unknown; b_4?: unknown } } | null)?.data
+  const b3 = typeof data?.b_3 === 'string' ? data.b_3 : ''
+  const b4 = typeof data?.b_4 === 'string' ? data.b_4 : ''
+  const parts: string[] = []
+  if (b3 !== '') parts.push(`buvid3=${b3}`)
+  if (b4 !== '') parts.push(`buvid4=${b4}`)
+  if (parts.length === 0) return null
+
+  const cookie = parts.join('; ')
+  bilibiliCookieCache = { value: cookie, expiresAt: Date.now() + BILIBILI_COOKIE_CACHE_MS }
+  return cookie
+}
+
 async function relayShortLink(target: URL): Promise<RelayOutcome> {
   let response: Response
   try {
@@ -132,19 +214,27 @@ async function relayShortLink(target: URL): Promise<RelayOutcome> {
   }
   const finalUrl = response.url || target.toString()
   if (finalUrl === target.toString()) return failure('UPSTREAM_ERROR')
-  const parsed = parseAllowedTarget(finalUrl)
-  if (parsed === null || parsed.hostname.toLowerCase() === SHORT_LINK_HOST) {
-    return failure('UPSTREAM_ERROR')
-  }
+  const parsed = parseShortLinkDestination(finalUrl)
+  if (parsed === null) return failure('UPSTREAM_ERROR')
   return { ok: true, status: response.status, location: parsed.toString() }
 }
 
 async function relayPlatform(target: URL): Promise<RelayOutcome> {
+  const host = target.hostname.toLowerCase()
   const headers: Record<string, string> = {
     'user-agent': USER_AGENT,
     accept: 'application/json',
   }
-  if (target.hostname.toLowerCase() === 'live.douyin.com'
+  if (host === BILIBILI_LIVE_HOST) {
+    // B 站依据请求头与设备指纹做风控。注意不能带 Origin：B 站对带 Origin 的请求直接 403。
+    headers['user-agent'] = BROWSER_USER_AGENT
+    headers.accept = 'application/json, text/plain, */*'
+    headers['accept-language'] = 'zh-CN,zh;q=0.9'
+    headers.referer = 'https://live.bilibili.com/'
+    const cookie = await obtainBilibiliCookie()
+    if (cookie !== null) headers.cookie = cookie
+  }
+  if (host === 'live.douyin.com'
     && target.pathname.startsWith(DOUYIN_ROOM_PATH_PREFIX)) {
     const ttwid = await obtainTtwid()
     if (ttwid === null) return failure('TTWID_UNAVAILABLE')
