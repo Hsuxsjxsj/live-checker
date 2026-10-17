@@ -7,7 +7,7 @@
 - 关注列表保存在浏览器 **localStorage**，不上传任何服务器。
 - 全部检测逻辑（链接解析、平台适配器、状态映射）都在浏览器端运行。
 - 页面可见时每 2 分钟自动刷新，支持手动刷新（10 秒冷却）、搜索、状态筛选、排序、编辑与删除。
-- 纯静态产物，可直接部署到 Cloudflare Pages 或 GitHub Pages。
+- 纯静态产物，可直接部署到 Cloudflare Pages（推荐）或 GitHub Pages。
 
 ## 为什么需要一个「检测通道」
 
@@ -60,12 +60,12 @@ B站 检测失败时状态显示为 `unknown`（需确认），**不会伪造为
 ```powershell
 pnpm install
 pnpm dev        # http://localhost:5173，开发服务器内置了与 Cloudflare Function 相同的中转逻辑
-pnpm test       # 链接解析 / 平台适配器 / 本地仓库 / 传输层单元测试
+pnpm test       # 链接解析 / 平台适配器 / 本地仓库 / 传输层 / 中转核心单元测试
 pnpm typecheck  # TypeScript 类型检查
 pnpm build      # 类型检查 + 生产构建到 dist/
 ```
 
-## 部署到 Cloudflare Pages（推荐，四平台全支持）
+## 部署到 Cloudflare Pages（推荐）
 
 ### 方式 A：Git 集成（推送即部署）
 
@@ -78,7 +78,8 @@ pnpm build      # 类型检查 + 生产构建到 dist/
    - **环境变量**：无需设置。Pages v3 构建镜像默认 Node.js 22.16 + pnpm 10.11，
      已满足本项目要求（Vite 8 需要 Node ≥ 22.12，lockfile 为 pnpm 9.0 格式）
 4. 部署完成后，`functions/api/relay.ts` 会自动作为 `/api/relay` 边缘函数生效，
-   页面探测到中转可用后即可检测全部四个平台。
+   页面「检测通道」会显示 **内置中转：可用**，斗鱼 / 虎牙 / 抖音 即可正常检测
+   （B站 受平台风控限制，见上文《已知限制》）。
 
 ### 方式 B：Wrangler CLI 直接部署
 
@@ -89,8 +90,21 @@ pnpm deploy      # = pnpm build && pnpm dlx wrangler pages deploy dist
 
 首次使用需要 `pnpm dlx wrangler login` 授权。`wrangler.toml` 已配置输出目录。
 
-> 抖音检测依赖平台对数据中心 IP 的容忍度；若抖音返回 `unknown`，属于平台侧限制，
-> B站/斗鱼/虎牙不受影响。
+> 平台差异：四个接口对机房 IP 的容忍度不同。实测 Cloudflare 边缘上 斗鱼 / 虎牙 / 抖音 均正常，
+> **B站 会被风控**（见上文《已知限制》）。
+
+### 绑定自定义域名
+
+1. 确认域名已托管在 Cloudflare（DNS 使用 CF 的 nameserver）。若还没有，
+   在 Dashboard → **Add a site** 添加域名并选 Free 计划，再到注册商处把 NS 改成 CF 提供的两个。
+2. Workers & Pages → 该项目 → **Custom domains** → **Set up a custom domain**，
+   输入要用的域名（推荐子域名，如 `live.example.com`，不影响根域名上已有的邮箱/网站记录）。
+3. CF 会自动创建 DNS 记录（CNAME 指向 `<项目名>.pages.dev`）并签发 SSL 证书；
+   Custom domains 里的状态由 `Initializing` 变为 **`Active`** 后即可访问（一般 1~5 分钟）。
+4. 建议到 **SSL/TLS → Edge Certificates** 打开 **Always Use HTTPS**，让 http 强制跳转 https。
+
+前端资源使用相对路径、中转是**同源** `/api/relay`，因此绑定自定义域名**不需要改动任何代码**。
+注意 `www.example.com` 与 `example.com` 是两个不同的域名，需要分别添加。
 
 ## 关于 GitHub Pages（可选，功能受限）
 
@@ -104,14 +118,18 @@ Pages（Settings → Pages → Source 选择 **GitHub Actions**）并补一个�
 - `https://api.allorigins.win/raw?url=`
 - `https://api.codetabs.com/v1/proxy?quest=`
 
-公共代理由第三方提供，速度与稳定性不可保证。需要完整功能请使用 Cloudflare Pages。
+公共代理由第三方提供，可用性无法保证（实测 2026-10：allorigins 与 codetabs 返回 522、
+corsproxy.io 需要付费 key、cors.lol 限流），因此 GitHub Pages 只能算兜底方案，
+需要完整功能请使用 Cloudflare Pages。
 
 ## 目录结构
 
 ```text
 ├── .github/workflows/ci.yml      CI：类型检查 + 单元测试 + 构建
 ├── functions/api/relay.ts        Cloudflare Pages Function（域名白名单中转，部署到 CF 自动生效）
-├── shared/relay-core.ts          中转核心逻辑（CF Function 与本地开发服务器共用）
+├── shared/
+│   ├── relay-core.ts             中转核心逻辑（CF Function 与本地开发服务器共用）
+│   └── relay-core.test.ts        中转核心测试（白名单 / Cookie / 短链接解析）
 ├── src/
 │   ├── platform/                 链接解析、四平台适配器、传输层、LiveApi（全部浏览器端）
 │   ├── storage/                  localStorage 关注列表仓库
@@ -121,7 +139,8 @@ Pages（Settings → Pages → Source 选择 **GitHub Actions**）并补一个�
 │   └── theme/                    明暗主题
 ├── public/_headers               Cloudflare Pages 安全响应头
 ├── wrangler.toml                 Wrangler Pages 配置
-└── vite.config.ts                构建配置（含本地开发中转中间件）
+├── vite.config.ts                构建配置（含本地开发中转中间件）
+└── vitest.config.ts              单元测试配置（覆盖 src/ 与 shared/）
 ```
 
 ## 数据与隐私
